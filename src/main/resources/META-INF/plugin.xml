@@ -1,0 +1,28 @@
+<!-- Plugin Configuration File. Read more: https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
+<idea-plugin>
+    <id>com.maturin</id>
+    <name>pyO3-maturin</name>
+    <vendor email="tanawin1701d@outlook.com" url="https://github.com/Tanawin1701d/JetBrain-Verilog-Vivado-Plugins">Merge Panic Society</vendor>
+    <description><![CDATA[
+        <p><b>pyO3-maturin</b> adds a Gradle-style side panel for
+        <a href="https://www.maturin.rs">maturin</a> / PyO3 projects.</p>
+        <p>It detects every folder that contains both <code>Cargo.toml</code> and
+        <code>pyproject.toml</code> as a build task, lets you pick a start Python
+        file, and run or natively debug the compiled Rust module
+        (<code>maturin develop</code> + Python, with one-click attach of
+        RustRover's Rust debugger). It can also create a Python environment with
+        maturin and destroy compiled artifacts.</p>
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+
+    <resource-bundle>messages.MaturinBundle</resource-bundle>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <toolWindow id="Maturin"
+                    anchor="right"
+                    icon="/icons/maturin.svg"
+                    factoryClass="com.maturin.toolWindow.MaturinToolWindowFactory"/>
+        <notificationGroup id="Maturin" displayType="BALLOON"/>
+    </extensions>
+</idea-plugin>
