@@ -129,6 +129,16 @@ src/main/kotlin/com/maturin/
 
 ---
 
+## Credits
+
+Bootstrapped from the [IntelliJ Platform Plugin Template][template] by JetBrains
+— their scaffolding, Gradle setup, and CI workflows gave this plugin its starting
+point. Thanks to the JetBrains team for maintaining it.
+
+[template]: https://github.com/JetBrains/intellij-platform-plugin-template
+
+---
+
 ## License
 
 See repository for license details.
