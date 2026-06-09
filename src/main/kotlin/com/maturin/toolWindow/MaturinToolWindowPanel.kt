@@ -6,10 +6,13 @@ import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.DefaultActionGroup
+import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.ui.SimpleToolWindowPanel
+import com.intellij.openapi.ui.TextFieldWithBrowseButton
+import com.intellij.ui.DocumentAdapter
 import com.intellij.ui.OnePixelSplitter
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
@@ -32,6 +35,7 @@ import javax.swing.JPanel
 import javax.swing.tree.DefaultMutableTreeNode
 import javax.swing.tree.DefaultTreeModel
 import javax.swing.tree.TreeSelectionModel
+import kotlin.io.path.isDirectory
 import kotlin.io.path.isRegularFile
 import kotlin.io.path.name
 
@@ -50,7 +54,7 @@ class MaturinToolWindowPanel(private val project: Project) : SimpleToolWindowPan
         selectionModel.selectionMode = TreeSelectionModel.SINGLE_TREE_SELECTION
     }
 
-    private val startFileCombo = ComboBox<String>()
+    private val startFileField = TextFieldWithBrowseButton()
     private val venvCombo = ComboBox<String>()
     private val argField = JBTextField()
     private val detailHeader = JBLabel("Select a task")
@@ -106,7 +110,15 @@ class MaturinToolWindowPanel(private val project: Project) : SimpleToolWindowPan
             addActionListener { CreateEnvDialog(project).promptAndCreate { refreshVenvs() } }
         }
 
-        startFileCombo.addActionListener { persistStartFile() }
+        // Browse the project file tree, restricted to a single .py file.
+        val startFileDescriptor = FileChooserDescriptorFactory.createSingleFileDescriptor()
+            .withTitle("Select Start File")
+            .withDescription("Choose the Python entry script to run or debug")
+            .withFileFilter { it.extension.equals("py", ignoreCase = true) }
+        startFileField.addBrowseFolderListener(project, startFileDescriptor)
+        startFileField.textField.document.addDocumentListener(object : DocumentAdapter() {
+            override fun textChanged(e: javax.swing.event.DocumentEvent) = persistStartFile()
+        })
         venvCombo.addActionListener { persistVenv() }
 
         val buttons = JPanel().apply {
@@ -115,7 +127,7 @@ class MaturinToolWindowPanel(private val project: Project) : SimpleToolWindowPan
 
         return FormBuilder.createFormBuilder()
             .addComponent(detailHeader)
-            .addLabeledComponent("Start file:", startFileCombo)
+            .addLabeledComponent("Start file:", startFileField)
             .addLabeledComponent("Program args:", argField)
             .addLabeledComponent("Python env:", JBUI.Panels.simplePanel(venvCombo).addToRight(newEnvBtn))
             .addComponent(buttons)
@@ -160,23 +172,37 @@ class MaturinToolWindowPanel(private val project: Project) : SimpleToolWindowPan
     }
 
     private fun populateStartFiles(task: MaturinTask) {
-        val files = mutableListOf<String>()
-        // Python files directly inside the task folder.
-        runCatching {
-            java.nio.file.Files.list(task.rootPath).use { stream ->
-                stream.filter { it.isRegularFile() && it.name.endsWith(".py") }
-                    .forEach { files.add(it.toString()) }
+        // The user picks the start file via the Browse button (project file tree,
+        // .py only). Prefill with the saved choice, falling back to a best-guess
+        // entry script discovered under the task folder so the field isn't empty.
+        val saved = settings.forTask(task.key).startFile?.takeIf { Path.of(it).isRegularFile() }
+        val initial = saved ?: firstPythonFile(task.rootPath)
+        startFileField.text = initial ?: ""
+    }
+
+    /** A best-guess entry script: the first `.py` discovered under the task folder. */
+    private fun firstPythonFile(root: Path): String? {
+        val files = sortedSetOf<String>()
+        collectPythonFiles(root, 0, files)
+        return files.firstOrNull()
+    }
+
+    /** Collect `.py` files under [dir], skipping build dirs, venvs and hidden dirs. */
+    private fun collectPythonFiles(dir: Path, depth: Int, out: MutableSet<String>) {
+        if (depth > 5) return
+        val children = runCatching {
+            java.nio.file.Files.list(dir).use { it.toList() }
+        }.getOrElse { return }
+        for (child in children) {
+            when {
+                child.isRegularFile() && child.name.endsWith(".py") -> out.add(child.toString())
+                child.isDirectory()
+                    && child.name !in SKIP_DIRS
+                    && !child.name.startsWith(".")
+                    && !child.resolve("pyvenv.cfg").isRegularFile() ->
+                        collectPythonFiles(child, depth + 1, out)
             }
         }
-        // A shared debug_entry.py at the project root, if present.
-        project.basePath?.let { base ->
-            val entry = Path.of(base, "debug_entry.py")
-            if (entry.isRegularFile()) files.add(entry.toString())
-        }
-        files.sort()
-        startFileCombo.model = javax.swing.DefaultComboBoxModel(files.toTypedArray())
-        val saved = settings.forTask(task.key).startFile
-        if (saved != null && saved in files) startFileCombo.selectedItem = saved
     }
 
     private fun restoreVenvSelection(task: MaturinTask) {
@@ -194,7 +220,7 @@ class MaturinToolWindowPanel(private val project: Project) : SimpleToolWindowPan
 
     private fun persistStartFile() {
         val task = selectedTask ?: return
-        settings.forTask(task.key).startFile = startFileCombo.selectedItem as? String
+        settings.forTask(task.key).startFile = startFileField.text.ifBlank { null }
     }
 
     private fun persistVenv() {
@@ -223,7 +249,7 @@ class MaturinToolWindowPanel(private val project: Project) : SimpleToolWindowPan
             offerCreateEnv("maturin is not installed in ${env.displayName}.")
             return
         }
-        val startFileStr = startFileCombo.selectedItem as? String
+        val startFileStr = startFileField.text.ifBlank { null }
         if (startFileStr == null) {
             MaturinNotifications.warn(project, "Maturin", "Pick a start Python file first.")
             return
@@ -266,4 +292,8 @@ class MaturinToolWindowPanel(private val project: Project) : SimpleToolWindowPan
             override fun actionPerformed(e: AnActionEvent) = run()
             override fun getActionUpdateThread() = ActionUpdateThread.EDT
         }
+
+    private companion object {
+        val SKIP_DIRS = setOf("target", ".git", "node_modules", ".idea", "build", "__pycache__")
+    }
 }

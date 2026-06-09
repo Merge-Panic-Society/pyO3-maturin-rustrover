@@ -67,9 +67,14 @@ object PythonEnvManager {
             return
         }
         for (child in children) {
-            if (child.isDirectory() && child.name !in SKIP_DIRS && !child.name.startsWith(".")) {
-                walk(child, depth + 1, out)
-            }
+            if (!child.isDirectory() || child.name in SKIP_DIRS) continue
+            // Descend into hidden dirs only when they look like a venv: `.venv`
+            // is the maturin/PEP-405 convention, so blanket-skipping dot-dirs
+            // would hide the project's own environment. Other hidden dirs
+            // (.git/.idea/.pytest_cache/…) are still skipped as noise.
+            val looksLikeVenv = child.resolve("pyvenv.cfg").isRegularFile()
+            if (!looksLikeVenv && child.name.startsWith(".")) continue
+            walk(child, depth + 1, out)
         }
     }
 
