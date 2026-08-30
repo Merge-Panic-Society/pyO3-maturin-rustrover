@@ -11,6 +11,7 @@ import com.intellij.xdebugger.XDebugProcess
 import com.intellij.xdebugger.XDebugProcessStarter
 import com.intellij.xdebugger.XDebugSession
 import com.intellij.xdebugger.XDebuggerManager
+import com.intellij.xdebugger.breakpoints.XBreakpointType
 
 /**
  * Launches the venv Python *as the native debuggee* under RustRover's LLDB/GDB
@@ -60,13 +61,48 @@ object NativeDebugLauncher {
         false
     }
 
-    /** Class loader of the Native Debugging Support plugin (where CIDR lives). */
+    /**
+     * Class loader that can see the CIDR debugger classes. Through 2026.1 the
+     * nativeDebug plugin shipped as one jar, so its main plugin class loader
+     * sufficed. Since 2026.2 the plugin uses the modular layout
+     * (`lib/modules/intellij.cidr.debugger.core.jar` …): the classes live in
+     * content modules with their *own* loaders, invisible from the main one.
+     * The module loader is recovered from any CIDR breakpoint type registered
+     * into the stable `xdebugger.breakpointType` EP — those instances are
+     * created by `intellij.cidr.debugger.core`'s loader, which (via module
+     * dependencies) sees every class needed here. A single loader is used for
+     * all lookups so reflective signatures stay class-identity consistent.
+     */
     private fun cidrLoader(): ClassLoader {
-        val plugin = PluginManagerCore.getPlugin(PluginId.getId(NATIVE_DEBUG_PLUGIN))
-            ?: error("Native Debugging Support plugin ($NATIVE_DEBUG_PLUGIN) is not installed")
-        return plugin.pluginClassLoader
-            ?: error("Native Debugging Support plugin has no class loader")
+        val candidates = candidateLoaders(
+            extensions = XBreakpointType.EXTENSION_POINT_NAME.extensionList,
+            pluginLoader = PluginManagerCore.getPlugin(PluginId.getId(NATIVE_DEBUG_PLUGIN))?.pluginClassLoader,
+        )
+        if (candidates.isEmpty()) {
+            error("Native Debugging Support plugin ($NATIVE_DEBUG_PLUGIN) is not installed")
+        }
+        return pickLoader(candidates, LOCAL_DEBUG_PROCESS)
+            ?: error("No class loader in $NATIVE_DEBUG_PLUGIN can see the CIDR debugger classes")
     }
+
+    /**
+     * Candidate loaders, most-specific first: loaders of CIDR extension
+     * instances (the content-module loaders), then the plugin's main loader
+     * (pre-modular layouts).
+     */
+    internal fun candidateLoaders(extensions: List<Any>, pluginLoader: ClassLoader?): List<ClassLoader> =
+        buildList {
+            extensions
+                .filter { it.javaClass.name.startsWith("com.jetbrains.cidr.") }
+                .mapTo(this) { it.javaClass.classLoader }
+            pluginLoader?.let { add(it) }
+        }.distinct()
+
+    /** First candidate that can resolve [anchor] (without initializing it), or null. */
+    internal fun pickLoader(candidates: List<ClassLoader>, anchor: String): ClassLoader? =
+        candidates.firstOrNull { loader ->
+            runCatching { Class.forName(anchor, false, loader) }.isSuccess
+        }
 
     private fun load(name: String): Class<*> = Class.forName(name, true, cidrLoader())
 
